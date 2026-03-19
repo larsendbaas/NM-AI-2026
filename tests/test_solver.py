@@ -18,6 +18,8 @@ class SolverTests(unittest.TestCase):
     def setUp(self) -> None:
         self.round_detail = load_json_file(ROOT / "docs" / "round_detail.json")
         self.sample = load_json_file(ROOT / "docs" / "sim_seed0_0_0.json")
+        self.sample_with_round = dict(self.sample)
+        self.sample_with_round["round_id"] = self.round_detail["id"]
 
     def test_query_plan_uses_full_budget(self) -> None:
         feature_maps = build_feature_maps(self.round_detail)
@@ -50,7 +52,7 @@ class SolverTests(unittest.TestCase):
             workspace = Path(tmp_dir)
             (workspace / "docs").mkdir()
             (workspace / "docs" / "sim_seed0_0_0.json").write_text(
-                json.dumps(self.sample),
+                json.dumps(self.sample_with_round),
                 encoding="utf-8",
             )
             solver = AstarIslandSolver(workspace)
@@ -59,6 +61,21 @@ class SolverTests(unittest.TestCase):
             self.assertEqual(1, imported)
             observations = store.load_observations()
             self.assertEqual(1, len(observations))
+            self.assertEqual(self.round_detail["id"], observations[0]["round_id"])
+
+    def test_bootstrap_import_skips_sample_without_round_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            (workspace / "docs").mkdir()
+            (workspace / "docs" / "sim_seed0_0_0.json").write_text(
+                json.dumps(self.sample),
+                encoding="utf-8",
+            )
+            solver = AstarIslandSolver(workspace)
+            store = RunStore.for_round(workspace, self.round_detail["id"])
+            imported = solver.import_bootstrap_samples(self.round_detail["id"], store)
+            self.assertEqual(0, imported)
+            self.assertEqual([], store.load_observations())
 
 
 if __name__ == "__main__":
