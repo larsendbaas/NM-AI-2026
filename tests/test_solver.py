@@ -77,6 +77,14 @@ class SolverTests(unittest.TestCase):
             self.assertEqual(0, imported)
             self.assertEqual([], store.load_observations())
 
+    def test_run_store_resolves_labeled_round_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            labeled = workspace / "runs" / f"{self.round_detail['id']} (Round 1)"
+            labeled.mkdir(parents=True)
+            store = RunStore.for_round(workspace, self.round_detail["id"])
+            self.assertEqual(labeled, store.root)
+
 
 if __name__ == "__main__":
     unittest.main()

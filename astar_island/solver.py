@@ -205,26 +205,32 @@ class AstarIslandSolver:
         detail: dict[str, Any],
         feature_maps: list[Any],
         observations: list[dict[str, Any]],
+        exclude_round_ids: set[str] | None = None,
     ) -> TransitionModel:
         model = TransitionModel()
-        self._load_historical_analysis(model, current_round_id=detail["id"])
+        round_ids = set(exclude_round_ids or ())
+        round_ids.add(str(detail["id"]))
+        self._load_historical_analysis(model, exclude_round_ids=round_ids)
         model.fit(feature_maps, observations)
         return model
 
-    def _load_historical_analysis(self, model: TransitionModel, current_round_id: str) -> None:
+    def _load_historical_analysis(self, model: TransitionModel, exclude_round_ids: set[str]) -> None:
         runs_root = self.workspace_root / "runs"
         if not runs_root.exists():
             return
         for round_dir in sorted(runs_root.iterdir()):
-            if not round_dir.is_dir() or round_dir.name == current_round_id:
+            if not round_dir.is_dir():
                 continue
             detail_path = round_dir / "round_detail.json"
             if not detail_path.exists():
                 continue
+            round_detail = load_json_file(detail_path)
+            round_id = str(round_detail.get("id", ""))
+            if round_id in exclude_round_ids:
+                continue
             analysis_paths = sorted(round_dir.glob("analysis_seed_*.json"))
             if not analysis_paths:
                 continue
-            round_detail = load_json_file(detail_path)
             feature_maps = build_feature_maps(round_detail)
             loaded_any = False
             for path in analysis_paths:

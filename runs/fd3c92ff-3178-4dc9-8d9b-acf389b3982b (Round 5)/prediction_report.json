@@ -1,0 +1,15 @@
+{
+  "round_id": "fd3c92ff-3178-4dc9-8d9b-acf389b3982b",
+  "seeds": 5,
+  "queries_loaded": 50,
+  "observed_cells": 11250,
+  "historical_cells": 16000,
+  "historical_rounds": 2,
+  "prediction_paths": [
+    "C:\\Users\\Bruker\\OneDrive - NTNU\\Dokumenter\\utkast\\runs\\fd3c92ff-3178-4dc9-8d9b-acf389b3982b (Round 5)\\prediction_seed_0.json",
+    "C:\\Users\\Bruker\\OneDrive - NTNU\\Dokumenter\\utkast\\runs\\fd3c92ff-3178-4dc9-8d9b-acf389b3982b (Round 5)\\prediction_seed_1.json",
+    "C:\\Users\\Bruker\\OneDrive - NTNU\\Dokumenter\\utkast\\runs\\fd3c92ff-3178-4dc9-8d9b-acf389b3982b (Round 5)\\prediction_seed_2.json",
+    "C:\\Users\\Bruker\\OneDrive - NTNU\\Dokumenter\\utkast\\runs\\fd3c92ff-3178-4dc9-8d9b-acf389b3982b (Round 5)\\prediction_seed_3.json",
+    "C:\\Users\\Bruker\\OneDrive - NTNU\\Dokumenter\\utkast\\runs\\fd3c92ff-3178-4dc9-8d9b-acf389b3982b (Round 5)\\prediction_seed_4.json"
+  ]
+}

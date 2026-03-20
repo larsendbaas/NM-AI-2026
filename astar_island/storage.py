@@ -16,7 +16,16 @@ class RunStore:
 
     @classmethod
     def for_round(cls, workspace_root: Path, round_id: str) -> "RunStore":
-        return cls(workspace_root / "runs" / round_id)
+        runs_root = workspace_root / "runs"
+        plain_root = runs_root / round_id
+        if plain_root.exists():
+            return cls(plain_root)
+
+        labeled_matches = sorted(runs_root.glob(f"{round_id} (*)"))
+        if labeled_matches:
+            return cls(labeled_matches[0])
+
+        return cls(plain_root)
 
     def ensure(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)

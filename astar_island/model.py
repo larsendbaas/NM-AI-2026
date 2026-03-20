@@ -11,6 +11,9 @@ from .constants import BUILDABLE_TERRAINS, STATIC_TERRAINS, terrain_to_class
 from .features import CellFeatures, SeedFeatureMap
 
 
+MAX_CLASS_ENTROPY = math.log(6.0)
+
+
 def normalize(weights: list[float], floor: float = 0.01) -> list[float]:
     clipped = [max(floor, float(value)) for value in weights]
     total = sum(clipped)
@@ -48,13 +51,14 @@ class TransitionModel:
         self,
         feature_map: SeedFeatureMap,
         ground_truth: list[list[list[float]]],
-        cell_weight: float = 0.35,
+        cell_weight: float = 0.28,
     ) -> int:
         added_cells = 0
         for y, row in enumerate(ground_truth):
             for x, distribution in enumerate(row):
                 added_cells += 1
                 features = feature_map.get(x, y)
+                entropy_weight = self._historical_cell_weight(distribution, base_weight=cell_weight)
                 self._observe(
                     self.history,
                     seed_index=None,
@@ -62,7 +66,7 @@ class TransitionModel:
                     y=y,
                     features=features,
                     distribution=distribution,
-                    weight=cell_weight,
+                    weight=entropy_weight,
                     include_direct=False,
                 )
         self.summary = ObservationSummary(
@@ -139,11 +143,11 @@ class TransitionModel:
         prior = self._prior_distribution(features)
         posterior = [6.0 * value for value in prior]
 
-        self._blend(posterior, self.history.global_counts, 0.75)
-        self._blend(posterior, self.history.terrain_counts.get(features.terrain_key()), 1.0)
-        self._blend(posterior, self.history.broad_counts.get(features.broad_key()), 1.2)
-        self._blend(posterior, self.history.medium_counts.get(features.medium_key()), 1.5)
-        self._blend(posterior, self.history.specific_counts.get(features.specific_key()), 1.35)
+        self._blend(posterior, self.history.global_counts, 0.18)
+        self._blend(posterior, self.history.terrain_counts.get(features.terrain_key()), 0.45)
+        self._blend(posterior, self.history.broad_counts.get(features.broad_key()), 0.85)
+        self._blend(posterior, self.history.medium_counts.get(features.medium_key()), 1.25)
+        self._blend(posterior, self.history.specific_counts.get(features.specific_key()), 1.2)
 
         self._blend(posterior, self.live.global_counts, 0.35)
         self._blend(posterior, self.live.terrain_counts.get(features.terrain_key()), 0.65)
@@ -190,7 +194,7 @@ class TransitionModel:
         if terrain_history is None:
             return heuristic
         return normalize(
-            [0.6 * heuristic[index] + 0.4 * terrain_history[index] for index in range(6)],
+            [0.78 * heuristic[index] + 0.22 * terrain_history[index] for index in range(6)],
             self.floor,
         )
 
@@ -212,6 +216,15 @@ class TransitionModel:
         self._add(tables.broad_counts[features.broad_key()], distribution, weight)
         self._add(tables.medium_counts[features.medium_key()], distribution, weight)
         self._add(tables.specific_counts[features.specific_key()], distribution, weight)
+
+    @staticmethod
+    def _entropy(distribution: list[float]) -> float:
+        return -sum(value * math.log(max(value, 1e-12)) for value in distribution if value > 0.0)
+
+    @classmethod
+    def _historical_cell_weight(cls, distribution: list[float], base_weight: float) -> float:
+        normalized_entropy = cls._entropy(distribution) / MAX_CLASS_ENTROPY
+        return base_weight * (0.4 + 1.2 * normalized_entropy)
 
     def _heuristic_prior(self, features: CellFeatures) -> list[float]:
         terrain = features.terrain

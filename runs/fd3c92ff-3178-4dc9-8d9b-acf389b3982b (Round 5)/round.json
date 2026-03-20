@@ -1,0 +1,13 @@
+{
+  "id": "fd3c92ff-3178-4dc9-8d9b-acf389b3982b",
+  "round_number": 5,
+  "event_date": "2026-03-20",
+  "status": "active",
+  "map_width": 40,
+  "map_height": 40,
+  "prediction_window_minutes": 165,
+  "started_at": "2026-03-20T06:03:10.400305+00:00",
+  "closes_at": "2026-03-20T08:48:10.400305+00:00",
+  "round_weight": 1.2763,
+  "created_at": "2026-03-20T06:03:10.694347+00:00"
+}
