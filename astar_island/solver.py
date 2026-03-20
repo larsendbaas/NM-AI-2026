@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .api import ApiError, AstarIslandClient
+from .constants import terrain_to_class
 from .features import build_feature_maps
 from .io import load_json_file
 from .model import TransitionModel
@@ -266,6 +267,7 @@ class AstarIslandSolver:
         runs_root = self.workspace_root / "runs"
         if not runs_root.exists():
             return
+        calibration_rounds: list[tuple[list[Any], dict[int, dict[tuple[int, int], list[float]]], list[tuple[int, list[list[list[float]]]]]]] = []
         for round_dir in sorted(runs_root.iterdir()):
             if not round_dir.is_dir():
                 continue
@@ -280,7 +282,10 @@ class AstarIslandSolver:
             if not analysis_paths:
                 continue
             feature_maps = build_feature_maps(round_detail)
+            observations = RunStore(round_dir).load_observations()
+            observed_by_seed = self._aggregate_observed_counts(observations)
             loaded_any = False
+            seed_truths: list[tuple[int, list[list[list[float]]]]] = []
             for path in analysis_paths:
                 seed_match = re.search(r"analysis_seed_(\d+)", path.stem)
                 if not seed_match:
@@ -293,9 +298,24 @@ class AstarIslandSolver:
                 if not ground_truth:
                     continue
                 model.add_historical_seed(feature_maps[seed_index], ground_truth)
+                model.add_historical_observation_seed(
+                    feature_maps[seed_index],
+                    observed_by_seed.get(seed_index, {}),
+                    ground_truth,
+                )
+                seed_truths.append((seed_index, ground_truth))
                 loaded_any = True
             if loaded_any:
+                calibration_rounds.append((feature_maps, observed_by_seed, seed_truths))
                 model.register_historical_round()
+
+        for feature_maps, observed_by_seed, seed_truths in calibration_rounds:
+            for seed_index, ground_truth in seed_truths:
+                model.add_residual_calibration_seed(
+                    feature_maps[seed_index],
+                    observed_by_seed.get(seed_index, {}),
+                    ground_truth,
+                )
 
     def _build_adaptive_hotspot_plan(
         self,
@@ -312,7 +332,7 @@ class AstarIslandSolver:
         observed_cell_counts = self._observed_cell_counts(observations)
 
         scored_windows: list[ScoredWindow] = []
-        for candidate in build_hotspot_candidates(detail, feature_maps, label="adaptive_hotspot"):
+        for candidate in build_hotspot_candidates(detail, feature_maps, step=1, label="adaptive_hotspot"):
             score = self._adaptive_window_score(candidate.query, feature_maps, predictions, observed_cell_counts)
             scored_windows.append(ScoredWindow(score, candidate.query))
 
@@ -333,11 +353,36 @@ class AstarIslandSolver:
             for x in range(query.x, min(feature_map.width, query.x + query.w)):
                 cell_prediction = prediction[y][x]
                 entropy = -sum(value * math.log(max(value, 1e-12)) for value in cell_prediction)
-                dynamic_mass = cell_prediction[1] + cell_prediction[2] + cell_prediction[3] + 0.55 * cell_prediction[4]
+                collision = 1.0 - sum(value * value for value in cell_prediction)
+                dynamic_mass = cell_prediction[1] + cell_prediction[2] + cell_prediction[3] + 0.65 * cell_prediction[4]
+                boundary = self._prediction_boundary_strength(prediction, x, y)
                 importance = 0.55 + math.log1p(dynamic_weight(feature_map.get(x, y)))
-                repeat_penalty = math.sqrt(1.0 + observed_cell_counts[(query.seed_index, x, y)])
-                total += (entropy + 0.45 * dynamic_mass) * importance / repeat_penalty
+                observation_count = observed_cell_counts[(query.seed_index, x, y)]
+                repeat_penalty = 0.65 + 0.75 * observation_count
+                info_gain = (0.6 * entropy / math.log(6.0) + 0.4 * collision) * (1.0 + 1.1 * boundary)
+                total += info_gain * (0.75 + dynamic_mass) * importance / repeat_penalty
         return total
+
+    @staticmethod
+    def _prediction_boundary_strength(
+        prediction: list[list[list[float]]],
+        x: int,
+        y: int,
+    ) -> float:
+        height = len(prediction)
+        width = len(prediction[0]) if height else 0
+        cell = prediction[y][x]
+        neighbors = ((1, 0), (-1, 0), (0, 1), (0, -1))
+        divergences: list[float] = []
+        for dx, dy in neighbors:
+            nx = x + dx
+            ny = y + dy
+            if nx < 0 or ny < 0 or nx >= width or ny >= height:
+                continue
+            divergences.append(0.5 * sum(abs(left - right) for left, right in zip(cell, prediction[ny][nx])))
+        if not divergences:
+            return 0.0
+        return sum(divergences) / len(divergences)
 
     @staticmethod
     def _observed_cell_counts(observations: list[dict[str, Any]]) -> Counter[tuple[int, int, int]]:
@@ -349,6 +394,24 @@ class AstarIslandSolver:
                 for x in range(int(viewport["x"]), int(viewport["x"]) + int(viewport["w"])):
                     counts[(seed_index, x, y)] += 1
         return counts
+
+    @staticmethod
+    def _aggregate_observed_counts(
+        observations: list[dict[str, Any]],
+    ) -> dict[int, dict[tuple[int, int], list[float]]]:
+        aggregated: dict[int, dict[tuple[int, int], list[float]]] = {}
+        for observation in observations:
+            viewport = observation["viewport"]
+            seed_index = int(observation["seed_index"])
+            base_x = int(viewport["x"])
+            base_y = int(viewport["y"])
+            seed_bucket = aggregated.setdefault(seed_index, {})
+            for dy, row in enumerate(observation["grid"]):
+                for dx, terrain_code in enumerate(row):
+                    key = (base_x + dx, base_y + dy)
+                    counts = seed_bucket.setdefault(key, [0.0] * 6)
+                    counts[terrain_to_class(int(terrain_code))] += 1.0
+        return aggregated
 
     def _execute_plan(
         self,

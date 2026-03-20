@@ -36,6 +36,15 @@ class CountTables:
     broad_counts: dict[tuple[int, ...], list[float]] = field(default_factory=lambda: defaultdict(lambda: [0.0] * 6))
     medium_counts: dict[tuple[int, ...], list[float]] = field(default_factory=lambda: defaultdict(lambda: [0.0] * 6))
     specific_counts: dict[tuple[int, ...], list[float]] = field(default_factory=lambda: defaultdict(lambda: [0.0] * 6))
+    observed_global_counts: dict[tuple[int, ...], list[float]] = field(
+        default_factory=lambda: defaultdict(lambda: [0.0] * 6)
+    )
+    observed_terrain_counts: dict[tuple[int, ...], list[float]] = field(
+        default_factory=lambda: defaultdict(lambda: [0.0] * 6)
+    )
+    observed_context_counts: dict[tuple[int, ...], list[float]] = field(
+        default_factory=lambda: defaultdict(lambda: [0.0] * 6)
+    )
 
 
 class TransitionModel:
@@ -45,6 +54,9 @@ class TransitionModel:
         self.floor = floor
         self.live = CountTables()
         self.history = CountTables()
+        self.calibration_global_counts: dict[tuple[int, ...], list[float]] = defaultdict(lambda: [0.0] * 6)
+        self.calibration_terrain_counts: dict[tuple[int, ...], list[float]] = defaultdict(lambda: [0.0] * 6)
+        self.calibration_context_counts: dict[tuple[int, ...], list[float]] = defaultdict(lambda: [0.0] * 6)
         self.summary = ObservationSummary(total_queries=0, total_cells=0, historical_cells=0, historical_rounds=0)
 
     def add_historical_seed(
@@ -75,6 +87,62 @@ class TransitionModel:
             historical_cells=self.summary.historical_cells + added_cells,
             historical_rounds=self.summary.historical_rounds,
         )
+        return added_cells
+
+    def add_historical_observation_seed(
+        self,
+        feature_map: SeedFeatureMap,
+        observed_counts: dict[tuple[int, int], list[float]],
+        ground_truth: list[list[list[float]]],
+        cell_weight: float = 0.42,
+    ) -> int:
+        added_cells = 0
+        for y, row in enumerate(ground_truth):
+            for x, distribution in enumerate(row):
+                sample_counts = observed_counts.get((x, y))
+                if not sample_counts:
+                    continue
+                added_cells += 1
+                features = feature_map.get(x, y)
+                sample_key = self._observed_sample_key(sample_counts)
+                entropy_weight = self._historical_cell_weight(distribution, base_weight=cell_weight)
+                self._add(self.history.observed_global_counts[sample_key], distribution, entropy_weight)
+                self._add(
+                    self.history.observed_terrain_counts[(features.terrain,) + sample_key],
+                    distribution,
+                    entropy_weight,
+                )
+                self._add(
+                    self.history.observed_context_counts[self._observed_context_key(features, sample_key)],
+                    distribution,
+                    entropy_weight,
+                )
+        return added_cells
+
+    def add_residual_calibration_seed(
+        self,
+        feature_map: SeedFeatureMap,
+        observed_counts: dict[tuple[int, int], list[float]],
+        ground_truth: list[list[list[float]]],
+        cell_weight: float = 0.34,
+    ) -> int:
+        added_cells = 0
+        for y, row in enumerate(ground_truth):
+            for x, distribution in enumerate(row):
+                features = feature_map.get(x, y)
+                sample_counts = observed_counts.get((x, y))
+                base_prediction = self._predict_base_distribution(features, sample_counts)
+                calibration_key = self._calibration_key(base_prediction, sample_counts)
+                context_key = self._calibration_context_key(features, calibration_key)
+                entropy_weight = self._historical_cell_weight(distribution, base_weight=cell_weight)
+                self._add(self.calibration_global_counts[calibration_key], distribution, entropy_weight)
+                self._add(
+                    self.calibration_terrain_counts[(features.terrain,) + calibration_key],
+                    distribution,
+                    entropy_weight,
+                )
+                self._add(self.calibration_context_counts[context_key], distribution, entropy_weight)
+                added_cells += 1
         return added_cells
 
     def register_historical_round(self) -> None:
@@ -140,23 +208,8 @@ class TransitionModel:
         return prediction
 
     def predict_cell(self, seed_index: int, x: int, y: int, features: CellFeatures) -> list[float]:
-        prior = self._prior_distribution(features)
-        posterior = [6.0 * value for value in prior]
-
-        self._blend(posterior, self.history.global_counts, 0.18)
-        self._blend(posterior, self.history.terrain_counts.get(features.terrain_key()), 0.45)
-        self._blend(posterior, self.history.broad_counts.get(features.broad_key()), 0.85)
-        self._blend(posterior, self.history.medium_counts.get(features.medium_key()), 1.25)
-        self._blend(posterior, self.history.specific_counts.get(features.specific_key()), 1.2)
-
-        self._blend(posterior, self.live.global_counts, 0.35)
-        self._blend(posterior, self.live.terrain_counts.get(features.terrain_key()), 0.65)
-        self._blend(posterior, self.live.broad_counts.get(features.broad_key()), 1.0)
-        self._blend(posterior, self.live.medium_counts.get(features.medium_key()), 1.45)
-        self._blend(posterior, self.live.specific_counts.get(features.specific_key()), 1.7)
-        self._blend(posterior, self.live.direct_counts.get((seed_index, x, y)), 5.6, cap=2.7)
-
-        return normalize(posterior, self.floor)
+        sample_counts = self.live.direct_counts.get((seed_index, x, y))
+        return self._predict_local_distribution(features, sample_counts)
 
     @staticmethod
     def _add(bucket: list[float], distribution: list[float], weight: float) -> None:
@@ -187,6 +240,62 @@ class TransitionModel:
             return
         for index, value in enumerate(distribution):
             target[index] += scale * strength * value
+
+    def _blend_observed_cell(
+        self,
+        target: list[float],
+        sample_counts: list[float] | None,
+        features: CellFeatures,
+    ) -> None:
+        if not sample_counts:
+            return
+
+        sample_key = self._observed_sample_key(sample_counts)
+        self._blend(target, self.history.observed_global_counts.get(sample_key), 1.1)
+        self._blend(target, self.history.observed_terrain_counts.get((features.terrain,) + sample_key), 1.8)
+        self._blend(target, self.history.observed_context_counts.get(self._observed_context_key(features, sample_key)), 2.4)
+
+        observed_total = sum(sample_counts)
+        direct_scale = 0.3 + 0.35 * min(3.0, observed_total)
+        direct_cap = 0.6 + 0.45 * min(3.0, observed_total)
+        self._blend(target, sample_counts, direct_scale, cap=direct_cap)
+
+    def _predict_base_distribution(self, features: CellFeatures, sample_counts: list[float] | None) -> list[float]:
+        prior = self._prior_distribution(features)
+        posterior = [6.0 * value for value in prior]
+
+        self._blend(posterior, self.history.global_counts, 0.18)
+        self._blend(posterior, self.history.terrain_counts.get(features.terrain_key()), 0.45)
+        self._blend(posterior, self.history.broad_counts.get(features.broad_key()), 0.85)
+        self._blend(posterior, self.history.medium_counts.get(features.medium_key()), 1.25)
+        self._blend(posterior, self.history.specific_counts.get(features.specific_key()), 1.2)
+
+        self._blend(posterior, self.live.global_counts, 0.35)
+        self._blend(posterior, self.live.terrain_counts.get(features.terrain_key()), 0.65)
+        self._blend(posterior, self.live.broad_counts.get(features.broad_key()), 1.0)
+        self._blend(posterior, self.live.medium_counts.get(features.medium_key()), 1.45)
+        self._blend(posterior, self.live.specific_counts.get(features.specific_key()), 1.7)
+        self._blend_observed_cell(posterior, sample_counts, features)
+        return normalize(posterior, self.floor)
+
+    def _predict_local_distribution(self, features: CellFeatures, sample_counts: list[float] | None) -> list[float]:
+        base_prediction = self._predict_base_distribution(features, sample_counts)
+        return self._apply_residual_calibration(base_prediction, features, sample_counts)
+
+    def _apply_residual_calibration(
+        self,
+        base_prediction: list[float],
+        features: CellFeatures,
+        sample_counts: list[float] | None,
+    ) -> list[float]:
+        calibration_key = self._calibration_key(base_prediction, sample_counts)
+        context_key = self._calibration_context_key(features, calibration_key)
+        posterior = [4.2 * value for value in base_prediction]
+
+        self._blend(posterior, self.calibration_global_counts.get(calibration_key), 0.75)
+        self._blend(posterior, self.calibration_terrain_counts.get((features.terrain,) + calibration_key), 1.15)
+        self._blend(posterior, self.calibration_context_counts.get(context_key), 1.35)
+        return normalize(posterior, self.floor)
 
     def _prior_distribution(self, features: CellFeatures) -> list[float]:
         heuristic = self._heuristic_prior(features)
@@ -220,6 +329,52 @@ class TransitionModel:
     @staticmethod
     def _entropy(distribution: list[float]) -> float:
         return -sum(value * math.log(max(value, 1e-12)) for value in distribution if value > 0.0)
+
+    @staticmethod
+    def _observed_sample_key(sample_counts: list[float]) -> tuple[int, ...]:
+        integer_counts = tuple(min(3, int(round(value))) for value in sample_counts)
+        total_count = min(3, sum(integer_counts))
+        return (total_count,) + integer_counts
+
+    @staticmethod
+    def _observed_context_key(features: CellFeatures, sample_key: tuple[int, ...]) -> tuple[int, ...]:
+        return (
+            features.terrain,
+            features.coastal,
+            features.adj_settlement,
+            features.adj_port,
+            features.adj_ruin,
+            features.adj_forest,
+            features.dist_settlement,
+            features.dist_ruin,
+            features.dist_ocean,
+        ) + sample_key
+
+    @classmethod
+    def _calibration_key(cls, prediction: list[float], sample_counts: list[float] | None) -> tuple[int, ...]:
+        dominant_class = max(range(6), key=prediction.__getitem__)
+        sorted_prediction = sorted(prediction, reverse=True)
+        top_probability = prediction[dominant_class]
+        entropy_bin = min(5, int(6.0 * cls._entropy(prediction) / MAX_CLASS_ENTROPY))
+        confidence_bin = min(5, int(6.0 * top_probability))
+        margin_bin = min(5, int(10.0 * max(0.0, sorted_prediction[0] - sorted_prediction[1])))
+        observed_total = min(3, int(sum(sample_counts))) if sample_counts else 0
+        observed_class = 6 if not sample_counts else max(range(6), key=sample_counts.__getitem__)
+        return (observed_total, dominant_class, observed_class, confidence_bin, entropy_bin, margin_bin)
+
+    @staticmethod
+    def _calibration_context_key(features: CellFeatures, calibration_key: tuple[int, ...]) -> tuple[int, ...]:
+        return (
+            features.terrain,
+            features.coastal,
+            features.adj_settlement,
+            features.adj_port,
+            features.adj_ruin,
+            features.adj_forest,
+            features.dist_settlement,
+            features.dist_ruin,
+            features.dist_ocean,
+        ) + calibration_key
 
     @classmethod
     def _historical_cell_weight(cls, distribution: list[float], base_weight: float) -> float:
