@@ -31,6 +31,8 @@ def build_parser() -> argparse.ArgumentParser:
     submit = subparsers.add_parser("submit", help="Submit saved predictions for all seeds.")
     submit.add_argument("--round-id", help="Round id. Defaults to the active round.")
 
+    subparsers.add_parser("sync-analysis", help="Fetch completed-round analyses into local runs/.")
+
     solve = subparsers.add_parser("solve", help="Fetch, collect, predict, and optionally submit.")
     solve.add_argument("--max-queries", type=int, help="Limit live collection.")
     solve.add_argument("--dry-run", action="store_true", help="Do not call /simulate.")
@@ -85,6 +87,15 @@ def main() -> None:
         detail, store = resolve_round(solver, args.round_id)
         responses = solver.submit(detail, store)
         print(f"Submitted {len(responses)} predictions for round {detail['id']}.")
+        return
+
+    if args.command == "sync-analysis":
+        result = solver.sync_completed_analyses()
+        print(
+            f"Synced {result.synced_seeds} analysis file(s) across {result.synced_rounds} completed round(s)."
+        )
+        if result.skipped_rounds:
+            print(f"Skipped rounds: {', '.join(result.skipped_rounds)}")
         return
 
     if args.command == "solve":

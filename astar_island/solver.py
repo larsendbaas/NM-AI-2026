@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .api import AstarIslandClient
+from .api import ApiError, AstarIslandClient
 from .features import build_feature_maps
 from .io import load_json_file
 from .model import TransitionModel
@@ -30,6 +30,13 @@ from .storage import RunStore
 class CollectionResult:
     executed_queries: int
     remaining_budget: int
+
+
+@dataclass
+class AnalysisSyncResult:
+    synced_rounds: int
+    synced_seeds: int
+    skipped_rounds: list[str]
 
 
 class AstarIslandSolver:
@@ -175,6 +182,47 @@ class AstarIslandSolver:
             responses.append(self.client.submit(detail["id"], seed_index, prediction))
         store.save_json("submit_response.json", responses)
         return responses
+
+    def sync_completed_analyses(self) -> AnalysisSyncResult:
+        synced_rounds = 0
+        synced_seeds = 0
+        skipped_rounds: list[str] = []
+
+        for round_item in self.client.get_my_rounds():
+            round_id = str(round_item["id"])
+            status = str(round_item.get("status", ""))
+            round_score = round_item.get("round_score")
+            seeds_submitted = int(round_item.get("seeds_submitted") or 0)
+            if status != "completed" or round_score is None or seeds_submitted <= 0:
+                skipped_rounds.append(round_id)
+                continue
+
+            detail = self.client.get_round_detail(round_id)
+            store = RunStore.for_round(self.workspace_root, round_id)
+            store.save_json("round.json", round_item)
+            store.save_json("round_detail.json", detail)
+
+            try:
+                analyses: list[tuple[int, dict[str, Any]]] = []
+                for seed_index in range(int(detail["seeds_count"])):
+                    analysis = self.client.get_analysis(round_id, seed_index)
+                    analyses.append((seed_index, analysis))
+            except ApiError:
+                skipped_rounds.append(round_id)
+                continue
+
+            for seed_index, analysis in analyses:
+                store.save_json(f"analysis_seed_{seed_index}.json", analysis)
+                synced_seeds += 1
+
+            if analyses:
+                synced_rounds += 1
+
+        return AnalysisSyncResult(
+            synced_rounds=synced_rounds,
+            synced_seeds=synced_seeds,
+            skipped_rounds=skipped_rounds,
+        )
 
     @staticmethod
     def _window_key(payload: dict[str, Any]) -> tuple[int, int, int, int, int]:

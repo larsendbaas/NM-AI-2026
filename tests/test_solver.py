@@ -85,6 +85,52 @@ class SolverTests(unittest.TestCase):
             store = RunStore.for_round(workspace, self.round_detail["id"])
             self.assertEqual(labeled, store.root)
 
+    def test_sync_completed_analyses_saves_round_and_seed_files(self) -> None:
+        class FakeClient:
+            def get_my_rounds(self) -> list[dict[str, object]]:
+                return [
+                    {
+                        "id": self.round_detail["id"],
+                        "status": "completed",
+                        "round_score": 77.9,
+                        "seeds_submitted": 5,
+                    }
+                ]
+
+            def get_round_detail(self, round_id: str) -> dict[str, object]:
+                self.assertEqual(self.round_detail["id"], round_id)
+                return self.round_detail
+
+            def get_analysis(self, round_id: str, seed_index: int) -> dict[str, object]:
+                self.assertEqual(self.round_detail["id"], round_id)
+                return {
+                    "prediction": [[[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]]],
+                    "ground_truth": [[[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]]],
+                    "score": 100.0,
+                    "width": 1,
+                    "height": 1,
+                    "seed_index": seed_index,
+                }
+
+            def __init__(self, round_detail: dict[str, object], testcase: unittest.TestCase) -> None:
+                self.round_detail = round_detail
+                self.testcase = testcase
+
+            def assertEqual(self, left: object, right: object) -> None:
+                self.testcase.assertEqual(left, right)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            solver = AstarIslandSolver(workspace, client=FakeClient(self.round_detail, self))
+            result = solver.sync_completed_analyses()
+            self.assertEqual(1, result.synced_rounds)
+            self.assertEqual(5, result.synced_seeds)
+            store = RunStore.for_round(workspace, self.round_detail["id"])
+            self.assertTrue((store.root / "round.json").exists())
+            self.assertTrue((store.root / "round_detail.json").exists())
+            for seed_index in range(5):
+                self.assertTrue((store.root / f"analysis_seed_{seed_index}.json").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
