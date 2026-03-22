@@ -12,6 +12,8 @@ from .features import CellFeatures, SeedFeatureMap
 
 
 MAX_CLASS_ENTROPY = math.log(6.0)
+OBSERVED_POSTERIOR_STRENGTH = 384.0
+OBSERVED_POSTERIOR_BLEND = 0.6
 
 
 def normalize(weights: list[float], floor: float = 0.01) -> list[float]:
@@ -209,7 +211,17 @@ class TransitionModel:
 
     def predict_cell(self, seed_index: int, x: int, y: int, features: CellFeatures) -> list[float]:
         sample_counts = self.live.direct_counts.get((seed_index, x, y))
-        return self._predict_local_distribution(features, sample_counts)
+        prediction = self._predict_local_distribution(features, sample_counts)
+        if not sample_counts:
+            return prediction
+        corrected_prediction = self._predict_observation_corrected_distribution(features, sample_counts)
+        blended = [
+            (1.0 - OBSERVED_POSTERIOR_BLEND) * prediction[index]
+            + OBSERVED_POSTERIOR_BLEND * corrected_prediction[index]
+            for index in range(6)
+        ]
+        total = sum(blended)
+        return [value / total for value in blended]
 
     @staticmethod
     def _add(bucket: list[float], distribution: list[float], weight: float) -> None:
@@ -281,6 +293,20 @@ class TransitionModel:
     def _predict_local_distribution(self, features: CellFeatures, sample_counts: list[float] | None) -> list[float]:
         base_prediction = self._predict_base_distribution(features, sample_counts)
         return self._apply_residual_calibration(base_prediction, features, sample_counts)
+
+    def _predict_observation_corrected_distribution(
+        self,
+        features: CellFeatures,
+        sample_counts: list[float],
+    ) -> list[float]:
+        observed_total = sum(sample_counts)
+        prior = self._predict_base_distribution(features, None)
+        posterior = [
+            (OBSERVED_POSTERIOR_STRENGTH * prior[index] + sample_counts[index])
+            / (OBSERVED_POSTERIOR_STRENGTH + observed_total)
+            for index in range(6)
+        ]
+        return self._apply_residual_calibration(posterior, features, sample_counts)
 
     def _apply_residual_calibration(
         self,
